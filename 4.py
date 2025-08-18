@@ -30,17 +30,6 @@ TIME_SLOTS = [
     "13:30", "14:30", "15:30", "16:30"
 ]
 
-# ---------- UTILITIES ----------
-def calculate_end_time(start_time):
-    """Calculate end time (1 hour after start time)"""
-    hour, minute = map(int, start_time.split(':'))
-    end_hour = hour + 1
-    # Handle overflow (though unlikely with our time slots)
-    if end_hour >= 24:
-        end_hour = 23
-        minute = 59
-    return f"{end_hour:02d}:{minute:02d}"
-
 # ---------- DATABASE SETUP ----------
 def get_db():
     conn = sqlite3.connect(DB_FILE, timeout=10)
@@ -195,7 +184,7 @@ Your smartboard booking has been confirmed!
 Details:
 - Classroom: {booking_details['classroom']}
 - Date: {booking_details['booking_date']}
-- Time: {booking_details['start_time']} - {booking_details['end_time']} (1 hour slot)
+- Time: {booking_details['start_time']} - {booking_details['end_time']}
 - Purpose: {booking_details['purpose']}
 
 Please arrive 5 minutes early to set up your equipment.
@@ -223,7 +212,7 @@ Your smartboard booking has been cancelled{cancelled_by_text}.
 Cancelled Booking Details:
 - Classroom: {booking_details['classroom']}
 - Date: {booking_details['booking_date']}
-- Time: {booking_details['start_time']} - {booking_details['end_time']} (1 hour slot)
+- Time: {booking_details['start_time']} - {booking_details['end_time']}
 - Purpose: {booking_details['purpose']}
 
 You can make a new booking through the system if needed.
@@ -394,7 +383,6 @@ button:hover { opacity: 0.95; }
 .form-group label { display: block; margin-bottom: 5px; font-weight: bold; }
 .status-confirmed { color: #28a745; }
 .status-cancelled { color: #dc3545; }
-.booking-note { background: #e9ecef; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 0.9rem; }
 </style>
 """
 
@@ -441,12 +429,6 @@ def index():
         <div class="small-muted">Only faculty accounts can create bookings. Admins can manage users and bookings in the Admin Panel.</div>
       {% else %}
         <h2>Make a Booking</h2>
-        
-        <div class="booking-note">
-          <strong>📝 Note:</strong> Each booking slot is automatically set to 1 hour duration. 
-          Select your preferred start time and the system will reserve the room until one hour later.
-        </div>
-        
         <form id="booking-form" method="post" action="{{ url_for('book') }}">
           <div class="form-group">
             <label>Classroom</label>
@@ -462,10 +444,18 @@ def index():
               <input type="date" name="booking_date" id="booking_date" required>
             </div>
             <div style="flex:1" class="form-group">
-              <label>Start Time (1 hour slot)</label>
+              <label>Start Time</label>
               <select name="start_time" id="start_time" required>
                 {% for time in time_slots %}
-                  <option value="{{time}}">{{time}} - {{ calculate_end_time(time) }}</option>
+                  <option value="{{time}}">{{time}}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div style="flex:1" class="form-group">
+              <label>End Time</label>
+              <select name="end_time" id="end_time" required>
+                {% for time in time_slots %}
+                  <option value="{{time}}">{{time}}</option>
                 {% endfor %}
               </select>
             </div>
@@ -482,7 +472,7 @@ def index():
             </select>
           </div>
           <div style="margin-top:10px;">
-            <button type="submit" id="book-btn" class="btn-success">Book Smartboard (1 Hour)</button>
+            <button type="submit" id="book-btn" class="btn-success">Book Smartboard</button>
             <button type="reset" style="background:#6c757d; margin-left:8px;">Reset</button>
             <span id="availability-msg" class="small-muted" style="margin-left:12px;"></span>
           </div>
@@ -496,14 +486,15 @@ def index():
             const classroom_id = document.getElementById('classroom_id').value;
             const booking_date = document.getElementById('booking_date').value;
             const start_time = document.getElementById('start_time').value;
-            if (!booking_date || !start_time) {
+            const end_time = document.getElementById('end_time').value;
+            if (!booking_date || !start_time || !end_time) {
                 availMsg.textContent = 'Please fill all fields.';
                 return;
             }
             const resp = await fetch("{{ url_for('check_availability') }}", {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({classroom_id, booking_date, start_time})
+                body: JSON.stringify({classroom_id, booking_date, start_time, end_time})
             });
             const data = await resp.json();
             if (data.available) {
@@ -545,7 +536,7 @@ def index():
         </tbody>
       </table>
     </div>
-    """, bookings=bookings, classrooms=classrooms, user=user, time_slots=TIME_SLOTS, calculate_end_time=calculate_end_time)
+    """, bookings=bookings, classrooms=classrooms, user=user, time_slots=TIME_SLOTS)
 
 @app.route("/profile", methods=["GET", "POST"])
 @login_required
@@ -712,7 +703,7 @@ Your account has been successfully created with the following details:
 - Email: {email}
 - Role: Faculty
 
-You can now log in using your email address and password to book smartboard rooms for 1-hour slots.
+You can now log in using your email address and password to book smartboard rooms.
 
 Login URL: {request.url_root}login
 
@@ -840,12 +831,10 @@ def check_availability():
     classroom_id = data.get("classroom_id")
     booking_date = data.get("booking_date")
     start_time = data.get("start_time")
+    end_time = data.get("end_time")
     
-    if not all([classroom_id, booking_date, start_time]):
+    if not all([classroom_id, booking_date, start_time, end_time]):
         return jsonify({"available": False, "error": "missing fields"}), 400
-    
-    # Calculate end time automatically
-    end_time = calculate_end_time(start_time)
     
     db = get_db()
     conflict = booking_conflict(db, classroom_id, booking_date, start_time, end_time)
@@ -866,15 +855,18 @@ def book():
     classroom_id = request.form.get("classroom_id")
     booking_date = request.form.get("booking_date")
     start_time = request.form.get("start_time")
+    end_time = request.form.get("end_time")
     purpose = request.form.get("purpose") or "Classroom Teaching"
 
     # Validate input
-    if not all([classroom_id, booking_date, start_time]):
+    if not all([classroom_id, booking_date, start_time, end_time]):
         flash("Please fill all required fields.", "error")
         return redirect(url_for("index"))
     
-    # Calculate end time automatically (1 hour after start time)
-    end_time = calculate_end_time(start_time)
+    # Validate time order
+    if start_time >= end_time:
+        flash("End time must be after start time.", "error")
+        return redirect(url_for("index"))
 
     db = get_db()
     
@@ -909,10 +901,10 @@ def book():
     if ADMIN_EMAIL:
         send_admin_notification(
             "New Booking Created",
-            f"New booking created:\n\nFaculty: {user['full_name']}\nClassroom: {classroom['name']}\nDate: {booking_date}\nTime: {start_time} - {end_time} (1 hour)\nPurpose: {purpose}"
+            f"New booking created:\n\nFaculty: {user['full_name']}\nClassroom: {classroom['name']}\nDate: {booking_date}\nTime: {start_time} - {end_time}\nPurpose: {purpose}"
         )
     
-    flash("Booking confirmed for 1 hour slot! Confirmation email sent.", "success")
+    flash("Booking confirmed! Confirmation email sent.", "success")
     return redirect(url_for("index"))
 
 @app.route("/cancel/<int:booking_id>", methods=["POST"])
@@ -1158,11 +1150,6 @@ def admin():
       </div>
       {% endif %}
 
-      <div class="booking-note">
-        <strong>📝 System Note:</strong> All bookings are now automatically set to 1-hour durations. 
-        Faculty members select start time and the system reserves until one hour later.
-      </div>
-
       <!-- Classroom Management -->
       <h2>Classroom Management</h2>
       
@@ -1276,7 +1263,7 @@ def admin():
       </table>
 
       <!-- Recent Bookings -->
-      <h2 style="margin-top: 30px;">Recent Bookings (All 1-Hour Slots)</h2>
+      <h2 style="margin-top: 30px;">Recent Bookings</h2>
       <table class="table">
         <thead><tr><th>Date</th><th>Time</th><th>Room</th><th>Faculty</th><th>Purpose</th><th>Status</th><th>Action</th></tr></thead>
         <tbody>
@@ -1409,7 +1396,7 @@ if __name__ == "__main__":
     else:
         init_db()  # Ensure schema is up to date
     
-    print("=== Smartboard Booking System (1-Hour Slots) ===")
+    print("=== Smartboard Booking System ===")
     print("SMTP Configuration:")
     print(f"  Host: {SMTP_HOST or 'Not configured'}")
     print(f"  Port: {SMTP_PORT}")
@@ -1417,11 +1404,6 @@ if __name__ == "__main__":
     print(f"  From: {SMTP_FROM or 'Not configured'}")
     print(f"  Admin Email: {ADMIN_EMAIL or 'Not configured'}")
     print(f"  TLS: {SMTP_TLS}")
-    print()
-    print("📝 BOOKING SYSTEM CHANGES:")
-    print("  • Faculty only select START TIME")
-    print("  • End time automatically set to 1 hour later")
-    print("  • All bookings are standardized to 1-hour slots")
     print()
     
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS]):
